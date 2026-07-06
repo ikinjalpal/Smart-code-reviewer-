@@ -1,1 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Smart Code Review Assistant</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
 
+<header class="topbar">
+  <div class="topbar__brand">
+    <span class="topbar__caret">&gt;_</span>
+    <span class="topbar__title">Smart Code Review Assistant</span>
+  </div>
+  <div class="topbar__subtitle">AST analysis · complexity · security · AI — one pipeline</div>
+</header>
+
+<main class="layout">
+
+  <!-- LEFT PANE: code input -->
+  <section class="pane pane--input">
+    <div class="pane__label">
+      <span class="pane__label-text">source.py</span>
+      <span class="pane__dot" id="statusDot"></span>
+    </div>
+    <textarea id="codeInput" class="code-editor" spellcheck="false"></textarea>
+    <button id="analyzeBtn" class="btn-analyze">
+      <span id="analyzeBtnText">Analyze</span>
+    </button>
+  </section>
+
+  <!-- RIGHT PANE: results -->
+  <section class="pane pane--results">
+    <div class="pane__label">
+      <span class="pane__label-text">results</span>
+      <button id="copyBtn" class="btn-copy" title="Copy results as JSON">Copy</button>
+    </div>
+
+    <div id="resultsBody" class="results-body">
+      <div class="empty-state">
+        Run an analysis to see bugs, complexity, security findings, and AI suggestions here.
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<script>
+// ----------------------------------------------------------------------
+// Pre-loaded example: intentionally buggy/vulnerable code so the demo
+// works instantly without the visitor having to type anything.
+// ----------------------------------------------------------------------
+const EXAMPLE_CODE = `def get_user(user_id):
+    import sqlite3
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    cursor.execute(f"SELECT * FROM users WHERE id = {user_id}")
+    password = "admin123"
+    return cursor.fetchall()
+`;
+
+const codeInput = document.getElementById('codeInput');
+const analyzeBtn = document.getElementById('analyzeBtn');
+const analyzeBtnText = document.getElementById('analyzeBtnText');
+const resultsBody = document.getElementById('resultsBody');
+const statusDot = document.getElementById('statusDot');
+const copyBtn = document.getElementById('copyBtn');
+
+let lastResult = null;
+
+window.addEventListener('DOMContentLoaded', () => {
+  codeInput.value = EXAMPLE_CODE;
+});
+
+// Severity -> CSS class map, used consistently across bug/security cards.
+const SEVERITY_CLASS = {
+  critical: 'sev-critical',
+  high: 'sev-high',
+  medium: 'sev-medium',
+  low: 'sev-low',
+};
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function renderBugs(bugs) {
+  if (!bugs || bugs.length === 0) {
+    return `<div class="card"><div class="card__header">Bugs Found (0)</div><div class="card__empty">No bugs detected.</div></div>`;
+  }
+  const items = bugs.map(b => `
+    <li class="finding ${SEVERITY_CLASS[b.severity] || ''}">
+      <span class="finding__badge">${escapeHtml(b.severity)}</span>
+      <span class="finding__text"><strong>Line ${b.line}:</strong> ${escapeHtml(b.message)}</span>
+    </li>`).join('');
+  return `<div class="card"><div class="card__header">Bugs Found (${bugs.length})</div><ul class="finding-list">${items}</ul></div>`;
+}
+
+function renderComplexity(complexityList) {
+  if (!complexityList || complexityList.length === 0) {
+    return `<div class="card"><div class="card__header">Complexity</div><div class="card__empty">No functions found.</div></div>`;
+  }
+  const items = complexityList.map(c => `
+    <li class="finding">
+      <span class="finding__badge complexity-badge">${escapeHtml(c.time_complexity)}</span>
+      <span class="finding__text"><strong>${escapeHtml(c.function)}</strong> — ${escapeHtml(c.explanation)}</span>
+    </li>`).join('');
+  return `<div class="card"><div class="card__header">Complexity</div><ul class="finding-list">${items}</ul></div>`;
+}
+
+function renderSecurity(findings) {
+  if (!findings || findings.length === 0) {
+    return `<div class="card"><div class="card__header">Security (0)</div><div class="card__empty">No vulnerabilities detected.</div></div>`;
+  }
+  const items = findings.map(f => `
+    <li class="finding ${SEVERITY_CLASS[f.severity] || ''}">
+      <span class="finding__badge">${escapeHtml(f.severity)}</span>
+      <span class="finding__text"><strong>Line ${f.line} — ${escapeHtml(f.vulnerability)}:</strong> ${escapeHtml(f.matched)}<br>
+      <span class="finding__fix">Fix: ${escapeHtml(f.fix)}</span></span>
+    </li>`).join('');
+  return `<div class="card"><div class="card__header">Security (${findings.length})</div><ul class="finding-list">${items}</ul></div>`;
+}
+
+function renderAI(aiReview) {
+  if (!aiReview || aiReview._source === 'fallback') {
+    const reason = aiReview && aiReview._error ? aiReview._error : 'AI review unavailable.';
+    return `<div class="card"><div class="card__header">AI Suggestions</div><div class="card__empty">${escapeHtml(reason)}</div></div>`;
+  }
+  let html = `<div class="card"><div class="card__header">AI Suggestions</div>`;
+  if (aiReview.improvements && aiReview.improvements.length) {
+    html += `<div class="ai-subsection"><span class="ai-subsection__title">Improvements</span><ul class="finding-list">${aiReview.improvements.map(i => `<li class="finding">${escapeHtml(i)}</li>`).join('')}</ul></div>`;
+  }
+  if (aiReview.style_issues && aiReview.style_issues.length) {
+    html += `<div class="ai-subsection"><span class="ai-subsection__title">Style Issues</span><ul class="finding-list">${aiReview.style_issues.map(i => `<li class="finding">${escapeHtml(i)}</li>`).join('')}</ul></div>`;
+  }
+  if (aiReview.edge_cases && aiReview.edge_cases.length) {
+    html += `<div class="ai-subsection"><span class="ai-subsection__title">Edge Cases</span><ul class="finding-list">${aiReview.edge_cases.map(i => `<li class="finding">${escapeHtml(i)}</li>`).join('')}</ul></div>`;
+  }
+  if (aiReview.rewritten_function) {
+    html += `<div class="ai-subsection"><span class="ai-subsection__title">Suggested Rewrite</span><pre class="code-block">${escapeHtml(aiReview.rewritten_function)}</pre></div>`;
+  }
+  html += `</div>`;
+  return html;
+}
+
+async function analyze() {
+  const code = codeInput.value;
+  if (!code.trim()) return;
+
+  analyzeBtn.disabled = true;
+  analyzeBtnText.innerHTML = '<span class="spinner"></span> Analyzing…';
+  statusDot.className = 'pane__dot pane__dot--busy';
+
+  try {
+    const resp = await fetch('/review/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    const data = await resp.json();
+    lastResult = data;
+
+    if (data.error) {
+      resultsBody.innerHTML = `<div class="card sev-critical"><div class="card__header">Syntax Error</div><div class="card__empty">${escapeHtml(data.error)}</div></div>`;
+      statusDot.className = 'pane__dot pane__dot--error';
+      return;
+    }
+
+    resultsBody.innerHTML =
+      renderBugs(data.bugs) +
+      renderComplexity(data.complexity) +
+      renderSecurity(data.security) +
+      renderAI(data.ai_review) +
+      `<div class="elapsed">Pipeline completed in ${data.elapsed_ms} ms</div>`;
+
+    statusDot.className = 'pane__dot pane__dot--ok';
+  } catch (err) {
+    resultsBody.innerHTML = `<div class="card sev-critical"><div class="card__header">Request Failed</div><div class="card__empty">${escapeHtml(String(err))}</div></div>`;
+    statusDot.className = 'pane__dot pane__dot--error';
+  } finally {
+    analyzeBtn.disabled = false;
+    analyzeBtnText.textContent = 'Analyze';
+  }
+}
+
+analyzeBtn.addEventListener('click', analyze);
+
+copyBtn.addEventListener('click', () => {
+  if (!lastResult) return;
+  navigator.clipboard.writeText(JSON.stringify(lastResult, null, 2));
+  const original = copyBtn.textContent;
+  copyBtn.textContent = 'Copied!';
+  setTimeout(() => { copyBtn.textContent = original; }, 1200);
+});
+</script>
+
+</body>
+</html>
