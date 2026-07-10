@@ -20,6 +20,7 @@ folder itself to sys.path and importing the file as a top-level
 module (`job_queue`) sidesteps that collision entirely.
 """
 
+import logging
 import os
 import sys
 import time
@@ -38,6 +39,13 @@ from pipeline.ai_reviewer import AIReviewer
 from job_queue import ReviewJobQueue
 
 app = Flask(__name__)
+
+# Server-side logger. This is where the REAL error details go — into
+# whatever platform's log viewer (e.g. Render's "Logs" tab), never
+# into the HTTP response. Visitors only ever see the generic message
+# from the error handlers below.
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("smart-code-reviewer")
 
 # Single shared instances of each analyzer — they're stateless, so
 # it's safe (and cheaper) to reuse them across requests/threads
@@ -162,6 +170,40 @@ def health():
     })
 
 
+# ----------------------------------------------------------------------
+# Error handlers — the safety net.
+#
+# debug=False already stops Flask's interactive debugger from ever
+# rendering, but that alone still leaves the default generic Werkzeug
+# error pages, and doesn't give us a place to log what actually broke.
+# These explicit handlers do three things:
+#   1. Guarantee every error response matches this app's own JSON
+#      shape instead of an HTML error page (consistent API contract).
+#   2. Guarantee the response body NEVER contains exception text,
+#      file paths, or stack trace lines — regardless of what kind of
+#      exception was raised or where.
+#   3. Log the real exception server-side (visible only in Render's
+#      log viewer / your own terminal), so the failure is still
+#      diagnosable by you, just never exposed publicly.
+# ----------------------------------------------------------------------
+@app.errorhandler(404)
+def handle_404(e):
+    return jsonify({"error": "Not found."}), 404
+
+
+@app.errorhandler(405)
+def handle_405(e):
+    return jsonify({"error": "Method not allowed."}), 405
+
+
+@app.errorhandler(Exception)
+def handle_uncaught_exception(e):
+    # Log the full details (type, message, traceback) server-side only.
+    logger.exception("Unhandled exception while processing a request")
+    # Return a deliberately generic, detail-free message to the client.
+    return jsonify({"error": "Internal server error. Please try again."}), 500
+
+
 if __name__ == "__main__":
     # PORT is read from the environment because hosting platforms like
     # Render/Heroku assign a port dynamically and pass it in — the app
@@ -177,3 +219,4 @@ if __name__ == "__main__":
     # and never executes this block — see Procfile.
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
+    
